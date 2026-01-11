@@ -1,36 +1,16 @@
 /**
- * Claude Code CLI wrapper - SIMPLIFIED
- * Uses `claude --print` for reliable text output
- * No streaming complexity - just get the answer
+ * Claude Code CLI wrapper - VERBOSE MODE
+ * Uses `claude --verbose` for real-time tool activity streaming
+ * Parses verbose output for tool calls and extracts final response
  */
 export interface ClaudeSessionConfig {
     workingDirectory: string;
 }
-export interface StreamingOptions {
-    /** Called with accumulated output periodically during processing */
-    onChunk?: (chunk: string, fullOutput: string) => void;
-    /** Minimum interval between chunk callbacks in ms (default: 2000) */
-    chunkIntervalMs?: number;
-    /** Minimum new characters needed to trigger a chunk callback (default: 100) */
-    minChunkSize?: number;
-}
-export interface ProgressOptions {
-    /** Called periodically to report progress (even when no new output) */
-    onProgress?: (update: ProgressUpdate) => void;
-    /** Interval between progress updates in ms (default: 5000) */
-    progressIntervalMs?: number;
-}
-export interface ProgressUpdate {
-    /** Elapsed time in seconds */
-    elapsedSecs: number;
-    /** Current phase (starting, processing, finalizing) */
-    phase: 'starting' | 'processing' | 'finishing';
-    /** Output length so far */
-    outputLength: number;
-    /** Whether we have any output yet */
-    hasOutput: boolean;
-    /** Update number (1, 2, 3...) */
-    updateNumber: number;
+export interface VerboseCallbacks {
+    /** Called when a tool activity is detected */
+    onToolActivity?: (activity: string) => void;
+    /** Minimum interval between activity callbacks in ms (default: 1000) */
+    activityIntervalMs?: number;
 }
 export declare class ClaudeSession {
     private config;
@@ -41,9 +21,9 @@ export declare class ClaudeSession {
     constructor(config: ClaudeSessionConfig);
     start(): Promise<void>;
     /**
-     * Send a message and get response - with optional streaming and progress callbacks
+     * Send a message and get response - with real-time tool activity updates via --verbose
      */
-    send(message: string, taskId?: string, streamingOptions?: StreamingOptions, progressOptions?: ProgressOptions): Promise<string>;
+    send(message: string, taskId?: string, callbacks?: VerboseCallbacks): Promise<string>;
     private cleanup;
     getPartialOutput(): string;
     getPid(): number | undefined;

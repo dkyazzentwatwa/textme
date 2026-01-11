@@ -214,9 +214,9 @@ function isApprovalResponse(content) {
     return { isApproval: false, approved: false };
 }
 /**
- * Send message to Claude and get response with streaming/progress updates
+ * Send message to Claude and get response with real-time tool activity updates
  */
-async function askClaude(message, phoneNumber, onChunk, onProgressUpdate) {
+async function askClaude(message, phoneNumber, onToolActivity) {
     const workingDir = getWorkingDirectory();
     const session = await getOrCreateSession(workingDir);
     // Get conversation history for context
@@ -233,18 +233,12 @@ async function askClaude(message, phoneNumber, onChunk, onProgressUpdate) {
     }
     const fullMessage = contextPrompt + message;
     const taskId = `task-${Date.now()}`;
-    // Build streaming options if callback provided
-    const streamingOptions = onChunk ? {
-        onChunk: onChunk,
-        chunkIntervalMs: config.streamingIntervalMs || 3000,
-        minChunkSize: config.streamingMinChunkSize || 50,
+    // Build verbose callbacks if activity callback provided
+    const callbacks = onToolActivity ? {
+        onToolActivity,
+        activityIntervalMs: 1000, // Send activity updates at most once per second
     } : undefined;
-    // Build progress options - always enable for real-time updates
-    const progressOptions = onProgressUpdate ? {
-        onProgress: onProgressUpdate,
-        progressIntervalMs: config.progressIntervalMs || 5000,
-    } : undefined;
-    const response = await session.send(fullMessage, taskId, streamingOptions, progressOptions);
+    const response = await session.send(fullMessage, taskId, callbacks);
     return response || 'No response from Claude.';
 }
 /**
@@ -270,35 +264,25 @@ async function processMessage(messageHandle, phoneNumber, content, fromQueue = f
     try {
         isProcessingMessage = true;
         console.log(`[Process] Set isProcessingMessage=true`);
-        // Track progress updates sent
-        let progressUpdateCount = 0;
-        let streamUpdateCount = 0;
-        // Streaming callback (when we get actual output chunks)
-        const onChunk = async (chunk, fullOutput) => {
-            streamUpdateCount++;
-            console.log(`[Stream] ---- Chunk #${streamUpdateCount} ----`);
-            console.log(`[Stream] New chunk: ${chunk.length} chars`);
-            console.log(`[Stream] Total output: ${fullOutput.length} chars`);
-            // Optionally send streaming updates too (if output is available)
-            const MAX_UPDATE_LENGTH = 2000;
-            let updateText = fullOutput;
-            if (fullOutput.length > MAX_UPDATE_LENGTH) {
-                updateText = '...\n' + fullOutput.slice(-MAX_UPDATE_LENGTH);
-            }
+        // Track tool activity updates sent
+        let activityUpdateCount = 0;
+        // Tool activity callback - sends real-time updates when Claude uses tools
+        const onToolActivity = async (activity) => {
+            activityUpdateCount++;
+            console.log(`[Activity] #${activityUpdateCount}: ${activity}`);
             try {
-                await sendblue.sendMessage(phoneNumber, `[Output... ${streamUpdateCount}]\n\n${updateText}`);
-                console.log(`[Stream] Chunk message sent`);
+                // Send tool activity as a brief update
+                await sendblue.sendMessage(phoneNumber, `🔧 ${activity}`);
+                console.log(`[Activity] Message sent`);
             }
             catch (err) {
-                console.error('[Stream] Failed to send chunk update:', err);
+                console.error('[Activity] Failed to send activity update:', err);
             }
         };
-        // Progress callback disabled - was sending too many "Working..." messages
-        // const onProgressUpdate = undefined;
-        // Send to Claude with conversation context (no progress spam)
-        console.log(`[Process] Calling askClaude (progress updates disabled)`);
+        // Send to Claude with tool activity callback
+        console.log(`[Process] Calling askClaude (verbose mode with tool activity)`);
         const claudeStart = Date.now();
-        const response = await askClaude(content, phoneNumber, onChunk, undefined);
+        const response = await askClaude(content, phoneNumber, onToolActivity);
         const claudeDuration = Date.now() - claudeStart;
         console.log(`[Process] Claude responded in ${claudeDuration}ms`);
         console.log(`[Process] Response length: ${response.length} chars`);
@@ -307,10 +291,9 @@ async function processMessage(messageHandle, phoneNumber, content, fromQueue = f
         const finalResponse = response.length > MAX_LENGTH
             ? response.substring(0, MAX_LENGTH) + '\n\n[Truncated]'
             : response;
-        // Send final response (marked as complete)
-        const totalUpdates = progressUpdateCount + streamUpdateCount;
-        const finalPrefix = totalUpdates > 0 ? '✅ [Complete]\n\n' : '';
-        console.log(`[Process] Sending final response (${progressUpdateCount} progress + ${streamUpdateCount} stream updates sent)`);
+        // Send final response (marked as complete if we sent activity updates)
+        const finalPrefix = activityUpdateCount > 0 ? '✅ Done\n\n' : '';
+        console.log(`[Process] Sending final response (${activityUpdateCount} activity updates sent)`);
         await sendblue.sendMessage(phoneNumber, finalPrefix + finalResponse);
         // Save response
         addConversationMessage(phoneNumber, 'assistant', finalResponse);
@@ -318,7 +301,7 @@ async function processMessage(messageHandle, phoneNumber, content, fromQueue = f
         const totalDuration = Date.now() - processStart;
         console.log(`[Process] ====== PROCESSING COMPLETE ======`);
         console.log(`[Process] Total time: ${totalDuration}ms`);
-        console.log(`[Process] Progress updates: ${progressUpdateCount}, Stream updates: ${streamUpdateCount}`);
+        console.log(`[Process] Activity updates: ${activityUpdateCount}`);
     }
     catch (error) {
         console.error('[Process] ====== ERROR ======');

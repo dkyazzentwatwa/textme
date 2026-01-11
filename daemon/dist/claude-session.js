@@ -1,7 +1,7 @@
 /**
- * Claude Code CLI wrapper - SIMPLIFIED
- * Uses `claude --print` for reliable text output
- * No streaming complexity - just get the answer
+ * Claude Code CLI wrapper - VERBOSE MODE
+ * Uses `claude --verbose` for real-time tool activity streaming
+ * Parses verbose output for tool calls and extracts final response
  */
 import { spawn, execSync } from 'child_process';
 import { setRunningTask, clearRunningTask, updateRunningTaskPid } from './db.js';
@@ -27,6 +27,90 @@ function findClaudePath() {
     }
 }
 const CLAUDE_PATH = findClaudePath();
+// Strip ANSI codes from text
+function stripAnsi(text) {
+    return text.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+// Parse tool activity from verbose output
+function parseToolActivity(line) {
+    const stripped = stripAnsi(line).trim();
+    // Common tool patterns in Claude CLI verbose output
+    const patterns = [
+        { regex: /^Read\s+(.+)$/i, format: (m) => `Reading: ${m[1]}` },
+        { regex: /^Glob\s+(.+)$/i, format: (m) => `Searching: ${m[1]}` },
+        { regex: /^Grep\s+(.+)$/i, format: (m) => `Grep: ${m[1]}` },
+        { regex: /^Bash\s+(.+)$/i, format: (m) => `Running: ${m[1]}` },
+        { regex: /^Write\s+(.+)$/i, format: (m) => `Writing: ${m[1]}` },
+        { regex: /^Edit\s+(.+)$/i, format: (m) => `Editing: ${m[1]}` },
+        { regex: /^Task\s+(.+)$/i, format: (m) => `Task: ${m[1]}` },
+        { regex: /Reading file[:\s]+(.+)$/i, format: (m) => `Reading: ${m[1]}` },
+        { regex: /Running[:\s]+(.+)$/i, format: (m) => `Running: ${m[1]}` },
+        { regex: /Writing to[:\s]+(.+)$/i, format: (m) => `Writing: ${m[1]}` },
+        { regex: /Searching[:\s]+(.+)$/i, format: (m) => `Searching: ${m[1]}` },
+    ];
+    for (const { regex, format } of patterns) {
+        const match = stripped.match(regex);
+        if (match) {
+            return format(match);
+        }
+    }
+    return null;
+}
+// Extract the final response from verbose output
+// Verbose output includes tool calls, ANSI codes, spinners, etc.
+// We want to extract just the actual text response
+function extractFinalResponse(rawOutput) {
+    // Strip ANSI codes first
+    let cleaned = stripAnsi(rawOutput);
+    // Remove common verbose output patterns
+    const linesToRemove = [
+        /^╭─+╮$/,
+        /^│.*│$/,
+        /^╰─+╯$/,
+        /^─+$/,
+        /^\s*⠋.*$/,
+        /^\s*⠙.*$/,
+        /^\s*⠹.*$/,
+        /^\s*⠸.*$/,
+        /^\s*⠼.*$/,
+        /^\s*⠴.*$/,
+        /^\s*⠦.*$/,
+        /^\s*⠧.*$/,
+        /^\s*⠇.*$/,
+        /^\s*⠏.*$/,
+        /^Read\s+/,
+        /^Glob\s+/,
+        /^Grep\s+/,
+        /^Bash\s+/,
+        /^Write\s+/,
+        /^Edit\s+/,
+        /^Task\s+/,
+        /^TodoWrite\s+/,
+        /^\s*\d+\s*│/, // Line numbers from file output
+        /^>\s+/, // User prompt prefix
+        /^User:/,
+        /^Assistant:/,
+    ];
+    const lines = cleaned.split('\n');
+    const filteredLines = [];
+    for (const line of lines) {
+        let shouldKeep = true;
+        for (const pattern of linesToRemove) {
+            if (pattern.test(line.trim())) {
+                shouldKeep = false;
+                break;
+            }
+        }
+        if (shouldKeep) {
+            filteredLines.push(line);
+        }
+    }
+    // Join and clean up extra whitespace
+    let result = filteredLines.join('\n');
+    // Remove multiple consecutive empty lines
+    result = result.replace(/\n{3,}/g, '\n\n');
+    return result.trim();
+}
 export class ClaudeSession {
     config;
     isActive_ = true;
@@ -41,10 +125,10 @@ export class ClaudeSession {
         console.log(`[ClaudeSession] Using claude at: ${CLAUDE_PATH}`);
     }
     /**
-     * Send a message and get response - with optional streaming and progress callbacks
+     * Send a message and get response - with real-time tool activity updates via --verbose
      */
-    async send(message, taskId, streamingOptions, progressOptions) {
-        console.log(`[Claude] ====== STARTING CLAUDE REQUEST ======`);
+    async send(message, taskId, callbacks) {
+        console.log(`[Claude] ====== STARTING CLAUDE REQUEST (VERBOSE MODE) ======`);
         console.log(`[Claude] Task ID: ${taskId || 'none'}`);
         console.log(`[Claude] Message length: ${message.length} chars`);
         console.log(`[Claude] Working dir: ${this.config.workingDirectory}`);
@@ -58,33 +142,25 @@ export class ClaudeSession {
             console.log(`[Claude] Set running task: ${taskId}`);
         }
         this.partialOutput = '';
-        const { onChunk, chunkIntervalMs = 2000, minChunkSize = 100 } = streamingOptions || {};
-        const { onProgress, progressIntervalMs = 5000 } = progressOptions || {};
-        console.log(`[Claude] Streaming config: chunkIntervalMs=${chunkIntervalMs}, minChunkSize=${minChunkSize}`);
-        console.log(`[Claude] Streaming callback: ${onChunk ? 'enabled' : 'disabled'}`);
-        console.log(`[Claude] Progress callback: ${onProgress ? 'enabled' : 'disabled'}, interval=${progressIntervalMs}ms`);
+        const { onToolActivity, activityIntervalMs = 1000 } = callbacks || {};
+        console.log(`[Claude] Tool activity callback: ${onToolActivity ? 'enabled' : 'disabled'}`);
         return new Promise((resolve, reject) => {
-            let output = '';
+            let rawOutput = '';
             let errorOutput = '';
-            let lastChunkSentAt = Date.now(); // Initialize to now, not 0
-            let lastChunkLength = 0;
-            let chunkInterval = null;
-            let progressInterval = null;
-            let chunkCheckCount = 0;
-            let progressUpdateCount = 0;
+            let lastActivityTime = 0;
+            let activityCount = 0;
             const startTime = Date.now();
-            // Simple: --print with permission bypass and --continue for conversation context
-            console.log(`[Claude] Spawning process: ${CLAUDE_PATH} --print --continue --permission-mode bypassPermissions`);
+            // Use --verbose for real-time tool activity
+            console.log(`[Claude] Spawning process: ${CLAUDE_PATH} --verbose --continue --permission-mode bypassPermissions`);
             const proc = spawn(CLAUDE_PATH, [
-                '--print',
+                '--verbose',
                 '--continue',
                 '--permission-mode', 'bypassPermissions',
             ], {
                 cwd: this.config.workingDirectory,
                 env: {
                     ...process.env,
-                    NO_COLOR: '1',
-                    FORCE_COLOR: '0',
+                    // Don't disable colors - we'll strip them ourselves
                 },
                 stdio: ['pipe', 'pipe', 'pipe'],
             });
@@ -93,106 +169,68 @@ export class ClaudeSession {
             if (proc.pid && this.currentTaskId) {
                 updateRunningTaskPid(this.currentTaskId, proc.pid);
             }
-            // Function to send chunk updates
-            const maybeEmitChunk = (force = false) => {
-                if (!onChunk)
-                    return;
-                chunkCheckCount++;
-                const now = Date.now();
-                const elapsed = now - startTime;
-                const newContent = output.substring(lastChunkLength);
-                const timeSinceLastChunk = now - lastChunkSentAt;
-                console.log(`[Claude] Chunk check #${chunkCheckCount}: elapsed=${elapsed}ms, newContent=${newContent.length} chars, timeSinceLastChunk=${timeSinceLastChunk}ms`);
-                // Emit chunk if: forced, OR (enough time passed AND enough new content)
-                if (force || (timeSinceLastChunk >= chunkIntervalMs && newContent.length >= minChunkSize)) {
-                    if (newContent.length > 0) {
-                        console.log(`[Claude] >>> EMITTING CHUNK: ${newContent.length} new chars (total: ${output.length})`);
-                        onChunk(newContent, output);
-                        lastChunkSentAt = now;
-                        lastChunkLength = output.length;
+            // Process incoming data for tool activity
+            const processLine = (line) => {
+                const activity = parseToolActivity(line);
+                if (activity && onToolActivity) {
+                    const now = Date.now();
+                    // Rate limit activity callbacks
+                    if (now - lastActivityTime >= activityIntervalMs) {
+                        activityCount++;
+                        console.log(`[Claude] Tool activity #${activityCount}: ${activity}`);
+                        onToolActivity(activity);
+                        lastActivityTime = now;
                     }
-                    else {
-                        console.log(`[Claude] Chunk check: no new content to emit`);
-                    }
-                }
-                else {
-                    console.log(`[Claude] Chunk check: threshold not met (time: ${timeSinceLastChunk}ms/${chunkIntervalMs}ms, size: ${newContent.length}/${minChunkSize})`);
                 }
             };
-            // Set up periodic chunk checking if streaming is enabled
-            if (onChunk) {
-                console.log(`[Claude] Setting up chunk interval timer (${chunkIntervalMs}ms)`);
-                chunkInterval = setInterval(() => {
-                    maybeEmitChunk(false);
-                }, chunkIntervalMs);
-            }
-            // Set up periodic progress updates (independent of streaming)
-            if (onProgress) {
-                console.log(`[Claude] Setting up progress interval timer (${progressIntervalMs}ms)`);
-                progressInterval = setInterval(() => {
-                    progressUpdateCount++;
-                    const elapsedMs = Date.now() - startTime;
-                    const elapsedSecs = Math.round(elapsedMs / 1000);
-                    // Determine phase based on elapsed time
-                    let phase;
-                    if (elapsedSecs < 5) {
-                        phase = 'starting';
-                    }
-                    else if (output.length > 0) {
-                        phase = 'finishing';
-                    }
-                    else {
-                        phase = 'processing';
-                    }
-                    console.log(`[Claude] Progress update #${progressUpdateCount}: phase=${phase}, elapsed=${elapsedSecs}s, output=${output.length} chars`);
-                    onProgress({
-                        elapsedSecs,
-                        phase,
-                        outputLength: output.length,
-                        hasOutput: output.length > 0,
-                        updateNumber: progressUpdateCount,
-                    });
-                }, progressIntervalMs);
-            }
+            // Buffer for incomplete lines
+            let lineBuffer = '';
             proc.stdout.on('data', (data) => {
                 const text = data.toString();
-                output += text;
-                this.partialOutput = output;
-                console.log(`[Claude] stdout: +${text.length} chars (total: ${output.length})`);
+                rawOutput += text;
+                this.partialOutput = rawOutput;
+                // Process line by line for tool activity detection
+                lineBuffer += text;
+                const lines = lineBuffer.split('\n');
+                lineBuffer = lines.pop() || ''; // Keep incomplete last line in buffer
+                for (const line of lines) {
+                    processLine(line);
+                }
+                console.log(`[Claude] stdout: +${text.length} chars (total: ${rawOutput.length})`);
             });
             proc.stderr.on('data', (data) => {
                 const text = data.toString();
                 errorOutput += text;
+                // stderr often has tool activity in verbose mode too
+                const lines = text.split('\n');
+                for (const line of lines) {
+                    processLine(line);
+                }
                 console.log(`[Claude] stderr: ${text.substring(0, 100)}${text.length > 100 ? '...' : ''}`);
             });
             proc.on('error', (error) => {
                 console.error(`[Claude] Process error:`, error);
-                if (chunkInterval)
-                    clearInterval(chunkInterval);
-                if (progressInterval)
-                    clearInterval(progressInterval);
                 this.cleanup();
                 reject(error);
             });
             proc.on('close', (code) => {
                 const duration = Date.now() - startTime;
                 this.currentProcess = null;
-                if (chunkInterval)
-                    clearInterval(chunkInterval);
-                if (progressInterval)
-                    clearInterval(progressInterval);
                 this.cleanup();
                 console.log(`[Claude] ====== PROCESS CLOSED ======`);
                 console.log(`[Claude] Exit code: ${code}`);
                 console.log(`[Claude] Duration: ${duration}ms`);
-                console.log(`[Claude] Output length: ${output.length} chars`);
-                console.log(`[Claude] Chunk checks performed: ${chunkCheckCount}`);
+                console.log(`[Claude] Raw output length: ${rawOutput.length} chars`);
+                console.log(`[Claude] Tool activities detected: ${activityCount}`);
                 if (errorOutput) {
                     console.log(`[Claude] Stderr (first 200 chars): ${errorOutput.substring(0, 200)}`);
                 }
-                if (output.trim()) {
-                    console.log(`[Claude] Resolving with output`);
-                    resolve(output.trim());
+                // Extract clean response from verbose output
+                // The actual response is typically at the end after all the tool outputs
+                const cleanOutput = extractFinalResponse(rawOutput);
+                if (cleanOutput.trim()) {
+                    console.log(`[Claude] Resolving with clean output (${cleanOutput.length} chars)`);
+                    resolve(cleanOutput.trim());
                 }
                 else if (code !== 0) {
                     console.log(`[Claude] Rejecting due to non-zero exit code`);
@@ -206,13 +244,10 @@ export class ClaudeSession {
             // Timeout after 10 minutes
             const timeout = setTimeout(() => {
                 console.log('[Claude] TIMEOUT - killing process after 10 minutes');
-                if (chunkInterval)
-                    clearInterval(chunkInterval);
-                if (progressInterval)
-                    clearInterval(progressInterval);
                 this.kill();
-                if (this.partialOutput.trim()) {
-                    resolve(this.partialOutput.trim() + '\n\n[Response timed out]');
+                const partial = extractFinalResponse(this.partialOutput);
+                if (partial.trim()) {
+                    resolve(partial.trim() + '\n\n[Response timed out]');
                 }
                 else {
                     reject(new Error('Response timeout'));
