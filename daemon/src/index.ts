@@ -285,6 +285,8 @@ const HELP_MESSAGE = `Commands:
 • help / ? - This message
 • status - Current status & directory
 • queue - View queued messages
+• history - Recent messages & outcomes
+• history N - Expand item N details
 • home - Go to home directory
 • reset / fresh - Home + clear chat history
 • cd <path> - Change directory
@@ -309,6 +311,18 @@ function isStatusCommand(content: string): boolean {
 function isQueueCommand(content: string): boolean {
   const normalized = content.toLowerCase().trim();
   return normalized === 'queue' || normalized === 'q';
+}
+
+function isHistoryCommand(content: string): { isHistory: boolean; expandIndex: number | null } {
+  const normalized = content.toLowerCase().trim();
+  if (normalized === 'history' || normalized === 'h') {
+    return { isHistory: true, expandIndex: null };
+  }
+  const match = normalized.match(/^(?:history|h)\s+(\d+)$/);
+  if (match) {
+    return { isHistory: true, expandIndex: parseInt(match[1], 10) };
+  }
+  return { isHistory: false, expandIndex: null };
 }
 
 function isInterruptCommand(content: string): boolean {
@@ -604,6 +618,75 @@ async function poll(): Promise<void> {
         continue;
       }
 
+      // Handle history command - show recent messages and outcomes
+      const historyResult = isHistoryCommand(content);
+      if (historyResult.isHistory) {
+        const history = getConversationHistory(msg.from_number, 20);
+
+        // Pair user messages with their responses
+        const pairs: Array<{ user: string; response: string | null; timestamp: number }> = [];
+        for (let i = 0; i < history.length; i++) {
+          if (history[i].role === 'user') {
+            const response = (i + 1 < history.length && history[i + 1].role === 'assistant')
+              ? history[i + 1].content
+              : null;
+            pairs.push({
+              user: history[i].content,
+              response,
+              timestamp: history[i].timestamp
+            });
+          }
+        }
+
+        // Reverse to show most recent first
+        pairs.reverse();
+
+        if (pairs.length === 0) {
+          await sendblue.sendMessage(msg.from_number, '📜 No history yet');
+          continue;
+        }
+
+        // If expanding a specific item
+        if (historyResult.expandIndex !== null) {
+          const idx = historyResult.expandIndex - 1; // 1-indexed for user
+          if (idx < 0 || idx >= pairs.length) {
+            await sendblue.sendMessage(msg.from_number, `❌ Invalid index. Use 1-${pairs.length}`);
+          } else {
+            const item = pairs[idx];
+            const timeAgo = formatTimeAgo(item.timestamp);
+            let detail = `📜 #${historyResult.expandIndex} (${timeAgo})\n\n`;
+            detail += `📤 You: "${item.user}"\n\n`;
+            if (item.response) {
+              const truncated = item.response.length > 1500
+                ? item.response.substring(0, 1500) + '\n\n[Truncated]'
+                : item.response;
+              detail += `📥 Claude: ${truncated}`;
+            } else {
+              detail += `⏳ No response yet (may be processing)`;
+            }
+            await sendblue.sendMessage(msg.from_number, detail);
+          }
+          continue;
+        }
+
+        // Show summary list
+        let historyDisplay = `📜 History (${pairs.length}):\n`;
+        const showCount = Math.min(pairs.length, 10);
+        for (let i = 0; i < showCount; i++) {
+          const item = pairs[i];
+          const preview = item.user.substring(0, 35) + (item.user.length > 35 ? '...' : '');
+          const status = item.response ? '✓' : '⏳';
+          const timeAgo = formatTimeAgo(item.timestamp);
+          historyDisplay += `${i + 1}. ${status} "${preview}" (${timeAgo})\n`;
+        }
+        if (pairs.length > 10) {
+          historyDisplay += `\n...and ${pairs.length - 10} more`;
+        }
+        historyDisplay += `\n\nUse "history N" to expand`;
+        await sendblue.sendMessage(msg.from_number, historyDisplay.trim());
+        continue;
+      }
+
       // Handle interrupt command immediately
       if (isInterruptCommand(content)) {
         await handleInterrupt(msg.from_number);
@@ -669,22 +752,24 @@ async function poll(): Promise<void> {
         continue;
       }
 
-      // Process the message with error recovery
-      try {
-        await processMessage(msg.message_handle, msg.from_number, content);
-      } catch (outerError) {
-        // This catches errors that escape processMessage's own try/catch
-        const errorMsg = outerError instanceof Error ? outerError.message : String(outerError);
-        console.error('[Poll] Message processing failed:', errorMsg);
-        try {
-          await sendblue.sendMessage(
-            msg.from_number,
-            `⚠️ [SYSTEM ERROR]\n\nFailed to process: "${content.substring(0, 40)}..."\n\nError: ${errorMsg}\n\nPlease try again or report this issue.`
-          );
-        } catch (sendErr) {
-          console.error('[Poll] Failed to send error notification:', sendErr);
+      // Process the message WITHOUT awaiting - allows poll loop to continue
+      // This enables immediate commands (queue, status, interrupt) to be handled
+      // even while Claude is working on a task
+      processMessage(msg.message_handle, msg.from_number, content).catch(
+        async (outerError) => {
+          // This catches errors that escape processMessage's own try/catch
+          const errorMsg = outerError instanceof Error ? outerError.message : String(outerError);
+          console.error('[Poll] Message processing failed:', errorMsg);
+          try {
+            await sendblue.sendMessage(
+              msg.from_number,
+              `⚠️ [SYSTEM ERROR]\n\nFailed to process: "${content.substring(0, 40)}..."\n\nError: ${errorMsg}\n\nPlease try again or report this issue.`
+            );
+          } catch (sendErr) {
+            console.error('[Poll] Failed to send error notification:', sendErr);
+          }
         }
-      }
+      );
     }
 
     // Process queued messages if not busy
