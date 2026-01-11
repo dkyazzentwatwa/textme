@@ -8,7 +8,7 @@ Text Claude from your phone via iMessage. Send a message, get a response. It can
 
 ### 1. Get Your Free Sendblue Number
 
-1. Sign up at [sendblue.com/company-signup](https://sendblue.com/company-signup)
+1. Sign up at [sendblue.co/company-signup](https://sendblue.co/company-signup)
 2. Get your **free iMessage number**
 3. Copy your **API Key** and **API Secret** from Dashboard → API Keys
 
@@ -37,7 +37,7 @@ nano ~/.config/claude-imessage/config.json
     "phoneNumber": "+1SENDBLUE_NUMBER"
   },
   "whitelist": ["+1YOUR_PHONE"],
-  "pollIntervalMs": 2000,
+  "pollIntervalMs": 5000,
   "conversationWindowSize": 20
 }
 ```
@@ -68,10 +68,13 @@ Text these to your bot:
 | `?` or `help` | Show commands |
 | `status` | Current status & directory |
 | `queue` or `q` | View queued messages |
+| `history` or `h` | Recent messages & outcomes |
+| `history 3` | Expand details of item #3 |
 | `home` | Go to home directory |
 | `reset` or `fresh` | Home + clear history |
 | `cd /path` | Change directory |
 | `stop` or `interrupt` | Cancel current task |
+| `yes` / `no` | Approve or reject pending actions |
 
 Everything else goes to Claude.
 
@@ -131,8 +134,8 @@ pkill -f "node.*daemon/dist"
 # Remove auto-start (if enabled)
 ./scripts/uninstall-launchd.sh
 
-# Remove config and logs
-rm -rf ~/.config/claude-imessage
+# Remove config, database, and logs
+rm -rf ~/.config/claude-imessage    # config.json, daemon.db, daemon.pid
 rm -f ~/.local/log/claude-imessage.log
 
 # Remove the repo

@@ -12,7 +12,6 @@ function findClaudePath() {
     }
     catch {
         const paths = [
-            `${process.env.HOME}/.nvm/versions/node/v24.12.0/bin/claude`,
             '/usr/local/bin/claude',
             `${process.env.HOME}/.local/bin/claude`,
         ];
