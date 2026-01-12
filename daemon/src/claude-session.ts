@@ -95,6 +95,9 @@ export class ClaudeSession {
       let toolCount = 0;
       const startTime = Date.now();
 
+      // System prompt to give Claude context about how it's being used
+      const systemPrompt = `You are being accessed via iMessage through the TextMe daemon. The user is texting you from their phone. Keep responses concise and mobile-friendly - avoid lengthy code blocks or verbose explanations unless specifically requested. You have full file system access and can help with coding tasks, but remember the user is reading your responses on a small screen.`;
+
       // Use stream-json for real-time events
       const args = [
         '--print',
@@ -102,6 +105,7 @@ export class ClaudeSession {
         '--verbose',  // Required for stream-json
         '--continue',
         '--permission-mode', 'bypassPermissions',
+        '--system-prompt', systemPrompt,
       ];
 
       console.log(`[Claude] Spawning: ${CLAUDE_PATH} ${args.join(' ')}`);
