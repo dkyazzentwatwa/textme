@@ -54,6 +54,8 @@ cd textme/daemon && npm install && npm run build
 node dist/index.js
 ```
 
+**Note:** Claude will operate in whatever directory you start the daemon from. Navigate to your project folder first if you want Claude to work there.
+
 ### 5. Test
 
 Text your Sendblue number: `hello`
