@@ -4,9 +4,9 @@ Text Claude from your phone via iMessage. Send a message, get a response.
 
 ## Quick Start
 
-### 1. Sendblue Setup
+### 1. Sendblue Setup (Free)
 
-1. Sign up at [dashboard.sendblue.com/company-signup](https://dashboard.sendblue.com/company-signup)
+1. Sign up at [dashboard.sendblue.com/company-signup](https://dashboard.sendblue.com/company-signup) - it's free
 2. Get your **API Key** and **API Secret** from Dashboard → API Keys
 3. Add your phone number as a **verified contact** in the dashboard
 
