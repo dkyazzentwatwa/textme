@@ -48,33 +48,75 @@ function setupLogging() {
     console.log(`[Daemon] Logging to: ${LOG_FILE}`);
 }
 /**
- * Acquire lock - ensures only one instance runs at a time
+ * Check if a process is our daemon (not a recycled PID)
  */
-function acquireLock() {
+function isOurDaemon(pid) {
     try {
-        // Check if PID file exists
-        if (fs.existsSync(PID_FILE)) {
-            const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
-            // Check if that process is still running
-            try {
-                process.kill(existingPid, 0); // Signal 0 just checks if process exists
-                console.error(`[Daemon] Another instance is already running (PID: ${existingPid})`);
-                return false;
-            }
-            catch {
-                // Process doesn't exist, stale PID file - we can take over
-                console.log(`[Daemon] Removing stale PID file (old PID: ${existingPid})`);
-            }
+        // Check if process exists
+        process.kill(pid, 0);
+        // On macOS/Linux, verify it's actually our daemon by checking cmdline
+        const cmdlinePath = `/proc/${pid}/cmdline`;
+        if (fs.existsSync(cmdlinePath)) {
+            const cmdline = fs.readFileSync(cmdlinePath, 'utf-8');
+            return cmdline.includes('claude-imessage') || cmdline.includes('textme');
         }
-        // Write our PID
-        fs.writeFileSync(PID_FILE, process.pid.toString());
-        console.log(`[Daemon] Lock acquired (PID: ${process.pid})`);
-        return true;
+        // On macOS, /proc doesn't exist - try ps command
+        try {
+            const { execSync } = require('child_process');
+            const psOutput = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf-8', timeout: 1000 });
+            return psOutput.includes('claude-imessage') || psOutput.includes('textme') || psOutput.includes('index.js');
+        }
+        catch {
+            // ps failed - process might not exist or we can't verify
+            return true; // Assume it's ours to be safe
+        }
     }
-    catch (error) {
-        console.error('[Daemon] Failed to acquire lock:', error);
+    catch {
+        // Process doesn't exist
         return false;
     }
+}
+/**
+ * Acquire lock - ensures only one instance runs at a time
+ * Uses retry logic to handle PM2 restart race conditions
+ */
+function acquireLock() {
+    const maxRetries = 3;
+    const retryDelayMs = 500;
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+            // Check if PID file exists
+            if (fs.existsSync(PID_FILE)) {
+                const existingPid = parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10);
+                // Check if that process is still running AND is our daemon
+                if (isOurDaemon(existingPid) && existingPid !== process.pid) {
+                    if (attempt < maxRetries - 1) {
+                        console.log(`[Daemon] Another instance running (PID: ${existingPid}), waiting ${retryDelayMs}ms... (attempt ${attempt + 1}/${maxRetries})`);
+                        // Synchronous wait
+                        const waitUntil = Date.now() + retryDelayMs;
+                        while (Date.now() < waitUntil) { /* busy wait */ }
+                        continue;
+                    }
+                    console.error(`[Daemon] Another instance is already running (PID: ${existingPid})`);
+                    return false;
+                }
+                else {
+                    // Process doesn't exist or isn't our daemon - stale PID file
+                    console.log(`[Daemon] Removing stale PID file (old PID: ${existingPid})`);
+                }
+            }
+            // Write our PID
+            fs.writeFileSync(PID_FILE, process.pid.toString());
+            console.log(`[Daemon] Lock acquired (PID: ${process.pid})`);
+            return true;
+        }
+        catch (error) {
+            console.error('[Daemon] Failed to acquire lock:', error);
+            if (attempt === maxRetries - 1)
+                return false;
+        }
+    }
+    return false;
 }
 /**
  * Release lock on shutdown
@@ -235,6 +277,78 @@ const HELP_MESSAGE = `Commands:
 
 Everything else goes to Claude.`;
 /**
+ * Detect media type from URL
+ */
+function detectMediaType(url) {
+    const lowerUrl = url.toLowerCase();
+    // Image extensions
+    if (/\.(jpg|jpeg|png|gif|webp|heic|heif|bmp|tiff?)(\?|$)/i.test(lowerUrl)) {
+        return 'image';
+    }
+    // Audio extensions (voice notes)
+    if (/\.(mp3|m4a|wav|aac|ogg|caf|amr)(\?|$)/i.test(lowerUrl)) {
+        return 'audio';
+    }
+    // Video extensions
+    if (/\.(mp4|mov|avi|webm|mkv)(\?|$)/i.test(lowerUrl)) {
+        return 'video';
+    }
+    // Check for common patterns in iMessage media URLs
+    if (lowerUrl.includes('image') || lowerUrl.includes('photo')) {
+        return 'image';
+    }
+    if (lowerUrl.includes('audio') || lowerUrl.includes('voice')) {
+        return 'audio';
+    }
+    return 'file';
+}
+/**
+ * Transcribe audio using OpenAI Whisper API
+ */
+async function transcribeAudio(audioUrl) {
+    const openaiKey = process.env.OPENAI_API_KEY;
+    if (!openaiKey) {
+        console.log('[Transcribe] No OPENAI_API_KEY set, skipping transcription');
+        return null;
+    }
+    try {
+        // Download the audio file
+        const audioResponse = await fetch(audioUrl);
+        if (!audioResponse.ok) {
+            console.error(`[Transcribe] Failed to download audio: ${audioResponse.status}`);
+            return null;
+        }
+        const audioBuffer = await audioResponse.arrayBuffer();
+        const blob = new Blob([audioBuffer]);
+        // Determine file extension from URL
+        const urlPath = new URL(audioUrl).pathname;
+        const ext = urlPath.split('.').pop()?.toLowerCase() || 'm4a';
+        // Create form data for Whisper API
+        const formData = new FormData();
+        formData.append('file', blob, `audio.${ext}`);
+        formData.append('model', 'whisper-1');
+        const whisperResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${openaiKey}`,
+            },
+            body: formData,
+        });
+        if (!whisperResponse.ok) {
+            const error = await whisperResponse.text();
+            console.error(`[Transcribe] Whisper API error: ${whisperResponse.status} - ${error}`);
+            return null;
+        }
+        const result = await whisperResponse.json();
+        console.log(`[Transcribe] Success: "${result.text.substring(0, 50)}..."`);
+        return result.text;
+    }
+    catch (error) {
+        console.error('[Transcribe] Error:', error);
+        return null;
+    }
+}
+/**
  * Check for special commands
  */
 function isHelpCommand(content) {
@@ -282,7 +396,15 @@ function isCdCommand(content) {
         if (targetPath.startsWith('~')) {
             targetPath = targetPath.replace(/^~/, os.homedir());
         }
-        return { isCD: true, path: targetPath };
+        // Security: Resolve to absolute path and check for path traversal
+        const resolvedPath = path.resolve(targetPath);
+        const homeDir = os.homedir();
+        // Only allow paths within home directory or /tmp
+        if (!resolvedPath.startsWith(homeDir) && !resolvedPath.startsWith('/tmp')) {
+            console.warn(`[Security] Blocked cd to path outside home: ${resolvedPath}`);
+            return { isCD: true, path: null, error: 'Access denied: path outside allowed directories' };
+        }
+        return { isCD: true, path: resolvedPath };
     }
     return { isCD: false, path: null };
 }
@@ -457,10 +579,46 @@ async function poll() {
                 markMessageProcessed(msg.message_handle);
                 continue;
             }
-            const content = msg.content?.trim();
-            if (!content) {
+            const textContent = msg.content?.trim() || '';
+            const mediaUrl = msg.media_url;
+            // Skip if no text AND no media
+            if (!textContent && !mediaUrl) {
                 markMessageProcessed(msg.message_handle);
                 continue;
+            }
+            // Build combined content with media info
+            let content = textContent;
+            if (mediaUrl) {
+                const mediaType = detectMediaType(mediaUrl);
+                if (mediaType === 'image') {
+                    const imageNotice = `[User sent an image: ${mediaUrl}]`;
+                    content = textContent ? `${textContent}\n\n${imageNotice}` : imageNotice;
+                    console.log(`[Poll] New image: ${mediaUrl.substring(0, 50)}...`);
+                }
+                else if (mediaType === 'audio') {
+                    // For voice notes, try to transcribe
+                    console.log(`[Poll] New voice note: ${mediaUrl.substring(0, 50)}...`);
+                    try {
+                        const transcription = await transcribeAudio(mediaUrl);
+                        if (transcription) {
+                            const voiceNotice = `[Voice note transcription: "${transcription}"]`;
+                            content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                        }
+                        else {
+                            const voiceNotice = `[User sent a voice note: ${mediaUrl}]`;
+                            content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                        }
+                    }
+                    catch (err) {
+                        console.error('[Poll] Transcription failed:', err);
+                        const voiceNotice = `[User sent a voice note: ${mediaUrl}]`;
+                        content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                    }
+                }
+                else {
+                    const fileNotice = `[User sent a file: ${mediaUrl}]`;
+                    content = textContent ? `${textContent}\n\n${fileNotice}` : fileNotice;
+                }
             }
             // 1 line per new message
             console.log(`[Poll] New: "${content.substring(0, 80)}${content.length > 80 ? '...' : ''}"`);
@@ -581,14 +739,19 @@ async function poll() {
             }
             // Handle cd command - change to specific directory
             const cdResult = isCdCommand(content);
-            if (cdResult.isCD && cdResult.path) {
-                if (fs.existsSync(cdResult.path) && fs.statSync(cdResult.path).isDirectory()) {
-                    setWorkingDirectory(cdResult.path);
-                    killCurrentSession();
-                    await sendblue.sendMessage(msg.from_number, `📂 Now in: ${cdResult.path}`);
+            if (cdResult.isCD) {
+                if (cdResult.error) {
+                    await sendblue.sendMessage(msg.from_number, `❌ ${cdResult.error}`);
                 }
-                else {
-                    await sendblue.sendMessage(msg.from_number, `❌ Directory not found: ${cdResult.path}`);
+                else if (cdResult.path) {
+                    if (fs.existsSync(cdResult.path) && fs.statSync(cdResult.path).isDirectory()) {
+                        setWorkingDirectory(cdResult.path);
+                        killCurrentSession();
+                        await sendblue.sendMessage(msg.from_number, `📂 Now in: ${cdResult.path}`);
+                    }
+                    else {
+                        await sendblue.sendMessage(msg.from_number, `❌ Directory not found: ${cdResult.path}`);
+                    }
                 }
                 continue;
             }
@@ -667,6 +830,28 @@ async function shutdown(signal) {
     process.exit(0);
 }
 /**
+ * Send crash notification via Sendblue
+ */
+async function sendCrashNotification(error, context) {
+    try {
+        // Only send if sendblue is initialized
+        if (!sendblue || !config?.whitelist?.length) {
+            console.error('[Daemon] Cannot send crash notification - sendblue not initialized');
+            return;
+        }
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        const stack = error instanceof Error ? error.stack?.split('\n').slice(0, 3).join('\n') : '';
+        const notification = `🚨 TextMe Daemon Crashed!\n\nContext: ${context}\nError: ${errorMsg}\n\n${stack ? `Stack:\n${stack}` : ''}`;
+        // Send to primary user
+        const primaryNumber = config.whitelist[0];
+        await sendblue.sendMessage(primaryNumber, notification);
+        console.log(`[Daemon] Crash notification sent to ${primaryNumber}`);
+    }
+    catch (notifyError) {
+        console.error('[Daemon] Failed to send crash notification:', notifyError);
+    }
+}
+/**
  * Main
  */
 async function main() {
@@ -677,6 +862,20 @@ async function main() {
     }
     // Setup file logging
     setupLogging();
+    // Setup crash handlers BEFORE init (so we can catch init failures)
+    process.on('uncaughtException', async (error) => {
+        console.error('[Daemon] Uncaught exception:', error);
+        await sendCrashNotification(error, 'uncaughtException');
+        releaseLock();
+        process.exit(1);
+    });
+    process.on('unhandledRejection', async (reason) => {
+        const error = reason instanceof Error ? reason : new Error(String(reason));
+        console.error('[Daemon] Unhandled rejection:', error);
+        await sendCrashNotification(error, 'unhandledRejection');
+        releaseLock();
+        process.exit(1);
+    });
     try {
         await init();
         startPolling();
@@ -686,6 +885,7 @@ async function main() {
     }
     catch (error) {
         console.error('[Daemon] Fatal:', error);
+        await sendCrashNotification(error, 'init failure');
         releaseLock();
         process.exit(1);
     }
