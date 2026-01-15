@@ -104,7 +104,9 @@ export class ClaudeSession {
             let toolCount = 0;
             const startTime = Date.now();
             // System prompt to give Claude context about how it's being used
-            const systemPrompt = `You are being accessed via iMessage through the TextMe daemon. The user is texting you from their phone. Keep responses concise and mobile-friendly - avoid lengthy code blocks or verbose explanations unless specifically requested. You have full file system access and can help with coding tasks, but remember the user is reading your responses on a small screen.`;
+            const systemPrompt = `You are being accessed via iMessage through the TextMe daemon. The user is texting you from their phone. Keep responses concise and mobile-friendly - avoid lengthy code blocks or verbose explanations unless specifically requested. You have full file system access and can help with coding tasks, but remember the user is reading your responses on a small screen.
+
+IMPORTANT: Before running pm2 restart/stop on textme, or any command that restarts this daemon, FIRST send a message saying what you're about to do and why - so the user knows the connection will briefly reset.`;
             // Use stream-json for real-time events
             const args = [
                 '--print',
@@ -210,21 +212,21 @@ export class ClaudeSession {
                     ctx.incrementToolCount();
                     const toolName = block.name || 'Unknown';
                     const displayName = TOOL_DISPLAY_NAMES[toolName] || toolName;
-                    // Build activity description
+                    // Build activity description (longer for better visibility)
                     let activity = displayName;
                     if (block.input) {
                         if (block.input.file_path) {
                             activity += `: ${block.input.file_path}`;
                         }
                         else if (block.input.command) {
-                            const cmd = block.input.command.substring(0, 100);
-                            activity += `: ${cmd}${block.input.command.length > 100 ? '...' : ''}`;
+                            const cmd = block.input.command.substring(0, 200);
+                            activity += `: ${cmd}${block.input.command.length > 200 ? '...' : ''}`;
                         }
                         else if (block.input.pattern) {
                             activity += `: ${block.input.pattern}`;
                         }
                         else if (block.input.query) {
-                            activity += `: ${block.input.query.substring(0, 80)}`;
+                            activity += `: ${block.input.query.substring(0, 150)}`;
                         }
                     }
                     // Rate limit activity callbacks
