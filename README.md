@@ -1,21 +1,35 @@
 # TextMe
 
-Text Claude from your phone via iMessage. Send a message, get a response.
+**Your personal Claude AI, accessible via iMessage.**
+
+Text Claude from anywhere. Send messages, voice notes, or images - get intelligent responses back to your phone.
+
+---
+
+## Features
+
+- **Text Claude** - Natural conversation via iMessage
+- **Voice Notes** - Send audio, automatically transcribed via OpenAI Whisper
+- **Images** - Send photos, Claude can see and analyze them
+- **File Access** - Claude has full filesystem access for coding tasks
+- **Attachments** - Claude can send files back to you
+- **Crash Alerts** - Get notified if the daemon goes down
+- **Queue System** - Multiple messages processed in order
+
+---
 
 ## Quick Start
 
 ### 1. Sendblue Setup (Free)
 
-1. Sign up at [dashboard.sendblue.com/company-signup](https://dashboard.sendblue.com/company-signup) - it's free
+1. Sign up at [dashboard.sendblue.com](https://dashboard.sendblue.com/company-signup)
 2. Get your **API Key** and **API Secret** from Dashboard → API Keys
-3. Add your phone number as a **verified contact** in the dashboard
+3. Add your phone number as a **verified contact**
 
 ### 2. Requirements
 
-You need Node.js 18+ and Claude Code CLI. If you don't have them:
-
 ```bash
-brew install node                         # Node.js
+brew install node                         # Node.js 18+
 npm install -g @anthropic-ai/claude-code  # Claude CLI
 ```
 
@@ -25,8 +39,6 @@ npm install -g @anthropic-ai/claude-code  # Claude CLI
 mkdir -p ~/.config/claude-imessage
 nano ~/.config/claude-imessage/config.json
 ```
-
-Paste this and **replace the placeholder values** with your actual credentials:
 
 ```json
 {
@@ -41,11 +53,6 @@ Paste this and **replace the placeholder values** with your actual credentials:
 }
 ```
 
-- `apiKey` / `apiSecret` - Your Sendblue API credentials (from Dashboard → API Keys)
-- `phoneNumber` - Your Sendblue phone number (the number you'll text TO)
-- `whitelist` - Your personal phone number(s) that are allowed to use the bot
-- Phone format: `+1` followed by 10 digits (e.g., `+19175551234`)
-
 ### 4. Run
 
 ```bash
@@ -53,8 +60,6 @@ git clone https://github.com/njerschow/textme.git
 cd textme/daemon && npm install && npm run build
 node dist/index.js
 ```
-
-**Note:** Claude will operate in whatever directory you start the daemon from. Navigate to your project folder first if you want Claude to work there.
 
 ### 5. Test
 
@@ -78,7 +83,43 @@ Text your Sendblue number: `hello`
 
 ---
 
-## Auto-Start (Optional)
+## Production (PM2)
+
+```bash
+pm2 start dist/index.js --name textme
+pm2 save
+pm2 startup
+```
+
+---
+
+## Architecture
+
+```
+daemon/
+├── src/
+│   ├── index.ts      # Main loop, message processing, media handling
+│   ├── sendblue.ts   # Sendblue API (send, receive, upload files)
+│   └── ...
+├── dist/             # Compiled output
+└── package.json
+```
+
+---
+
+## Logs
+
+```bash
+# PM2
+pm2 logs textme
+
+# Standalone
+tail -f ~/.local/log/claude-imessage.log
+```
+
+---
+
+## Auto-Start (launchd)
 
 ```bash
 ./scripts/install-launchd.sh    # Enable
@@ -87,19 +128,15 @@ Text your Sendblue number: `hello`
 
 ---
 
-## Troubleshooting
-
-Check logs: `tail -f ~/.local/log/claude-imessage.log`
-
----
-
 ## Uninstall
 
 ```bash
-pkill -f "node.*daemon/dist"
+pm2 delete textme  # or: pkill -f "node.*daemon/dist"
 rm -rf ~/.config/claude-imessage ~/.local/log/claude-imessage.log
 ```
 
 ---
+
+Built with [Sendblue](https://sendblue.co) + [Claude](https://anthropic.com)
 
 MIT License
