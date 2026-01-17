@@ -371,6 +371,79 @@ function detectMediaType(url: string): 'image' | 'audio' | 'video' | 'file' {
 }
 
 /**
+ * Parse and extract <send_file> tags from Claude's response
+ * Returns the files to send and the cleaned response text
+ */
+interface SendFileRequest {
+  path: string;
+  caption?: string;
+}
+
+function parseSendFileTags(response: string): { files: SendFileRequest[]; cleanedResponse: string } {
+  const files: SendFileRequest[] = [];
+
+  // Match <send_file path="..." /> or <send_file path="...">caption</send_file>
+  const tagRegex = /<send_file\s+path=["']([^"']+)["']\s*(?:\/>|>([^<]*)<\/send_file>)/gi;
+
+  let cleanedResponse = response;
+  let match;
+
+  while ((match = tagRegex.exec(response)) !== null) {
+    files.push({
+      path: match[1],
+      caption: match[2]?.trim() || undefined,
+    });
+  }
+
+  // Remove the tags from response
+  cleanedResponse = response.replace(tagRegex, '').trim();
+
+  // Also clean up any double newlines left behind
+  cleanedResponse = cleanedResponse.replace(/\n{3,}/g, '\n\n');
+
+  return { files, cleanedResponse };
+}
+
+/**
+ * Send files to the user via Sendblue
+ */
+async function sendFilesToUser(
+  phoneNumber: string,
+  files: SendFileRequest[],
+  sendblueClient: SendblueClient
+): Promise<void> {
+  for (const file of files) {
+    try {
+      console.log(`[SendFile] Uploading and sending: ${file.path}`);
+
+      // Check if it's a local file path or URL
+      if (file.path.startsWith('http://') || file.path.startsWith('https://')) {
+        // It's already a URL - upload to Sendblue CDN first
+        const mediaUrl = await sendblueClient.uploadFileFromUrl(file.path);
+        await sendblueClient.sendMessage(phoneNumber, file.caption || '', mediaUrl);
+      } else {
+        // Local file path
+        const fs = await import('fs');
+        if (!fs.existsSync(file.path)) {
+          console.error(`[SendFile] File not found: ${file.path}`);
+          await sendblueClient.sendMessage(phoneNumber, `⚠️ Could not send file: ${file.path} (not found)`);
+          continue;
+        }
+
+        const mediaUrl = await sendblueClient.uploadFile(file.path);
+        await sendblueClient.sendMessage(phoneNumber, file.caption || '', mediaUrl);
+      }
+
+      console.log(`[SendFile] Sent successfully: ${file.path}`);
+    } catch (err) {
+      console.error(`[SendFile] Failed to send ${file.path}:`, err);
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await sendblueClient.sendMessage(phoneNumber, `⚠️ Failed to send file: ${file.path}\nError: ${errorMsg}`);
+    }
+  }
+}
+
+/**
  * Transcribe audio using OpenAI Whisper API
  */
 async function transcribeAudio(audioUrl: string): Promise<string | null> {
@@ -566,9 +639,10 @@ async function processMessage(
   if (!fromQueue) {
     const queueLen = getQueueLength();
     const queueInfo = queueLen > 0 ? ` | ${queueLen} queued` : '';
+    const workingDir = getWorkingDirectory();
     await sendblue.sendMessage(
       phoneNumber,
-      `🔄 Starting: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"${queueInfo}`
+      `🔄 Starting: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"${queueInfo}\n📂 ${workingDir}`
     );
   }
 
@@ -592,18 +666,35 @@ async function processMessage(
 
     const response = await askClaude(content, phoneNumber, onToolActivity);
 
+    // Parse and handle <send_file> tags
+    const { files, cleanedResponse } = parseSendFileTags(response);
+
+    // Send files first (if any)
+    if (files.length > 0) {
+      console.log(`[Process] Sending ${files.length} file(s) to user`);
+      await sendFilesToUser(phoneNumber, files, sendblue);
+    }
+
     // Truncate if needed
     const MAX_LENGTH = 15000;
-    const finalResponse = response.length > MAX_LENGTH
-      ? response.substring(0, MAX_LENGTH) + '\n\n[Truncated]'
-      : response;
+    const finalResponse = cleanedResponse.length > MAX_LENGTH
+      ? cleanedResponse.substring(0, MAX_LENGTH) + '\n\n[Truncated]'
+      : cleanedResponse;
 
-    // Send final response
-    const finalPrefix = activityUpdateCount > 0 ? '✅ Done\n\n' : '';
-    await sendblue.sendMessage(phoneNumber, finalPrefix + finalResponse);
+    // Send final text response (if there's any text left)
+    if (finalResponse.trim()) {
+      const finalPrefix = activityUpdateCount > 0 ? '✅ Done\n\n' : '';
+      await sendblue.sendMessage(phoneNumber, finalPrefix + finalResponse);
+    } else if (files.length === 0) {
+      // No text and no files - send a minimal response
+      await sendblue.sendMessage(phoneNumber, '✅ Done');
+    }
 
-    // Save response
-    addConversationMessage(phoneNumber, 'assistant', finalResponse);
+    // Save response (include file info in history)
+    const historyResponse = files.length > 0
+      ? `${cleanedResponse}\n\n[Sent ${files.length} file(s): ${files.map(f => f.path).join(', ')}]`
+      : cleanedResponse;
+    addConversationMessage(phoneNumber, 'assistant', historyResponse);
     trimConversationHistory(phoneNumber, config.conversationWindowSize);
 
     const duration = ((Date.now() - processStart) / 1000).toFixed(1);
@@ -641,10 +732,11 @@ async function processQueue(): Promise<void> {
     console.log(`[Queue] ${remainingQueue} messages remaining in queue`);
 
     // Notify user that their queued message is being processed
+    const workingDir = getWorkingDirectory();
     console.log(`[Queue] Sending "Now processing" notification`);
     await sendblue.sendMessage(
       nextMessage.phone_number,
-      `📬 Now processing: "${nextMessage.content.substring(0, 50)}${nextMessage.content.length > 50 ? '...' : ''}"${queueInfo}`
+      `📬 Now processing: "${nextMessage.content.substring(0, 50)}${nextMessage.content.length > 50 ? '...' : ''}"${queueInfo}\n📂 ${workingDir}`
     );
 
     // Process the queued message (pass fromQueue=true to skip duplicate notification)
@@ -921,10 +1013,11 @@ async function poll(): Promise<void> {
       if (isProcessingMessage || getRunningTask()) {
         queueMessage(msg.message_handle, msg.from_number, content);
         const qLen = getQueueLength();
+        const workingDir = getWorkingDirectory();
         console.log(`[Poll] Queued (${qLen} in queue)`);
         await sendblue.sendMessage(
           msg.from_number,
-          `📥 Queued (position ${qLen}): "${content.substring(0, 40)}${content.length > 40 ? '...' : ''}"`
+          `📥 Queued (position ${qLen}): "${content.substring(0, 40)}${content.length > 40 ? '...' : ''}"\n📂 ${workingDir}`
         );
         continue;
       }
