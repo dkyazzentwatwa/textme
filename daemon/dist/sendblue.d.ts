@@ -66,8 +66,7 @@ export declare class SendblueClient {
         messageId: string;
     }>;
     /**
-     * Send a contact card by creating and hosting a temporary vCard
-     * Uses a data URL approach (may not work with all iMessage clients)
+     * Send a contact card by creating a vCard, uploading it, and sending as media
      */
     sendContactCardFromData(toNumber: string, contact: {
         name: string;

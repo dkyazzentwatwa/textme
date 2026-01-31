@@ -66,6 +66,14 @@ export function initDb() {
       expires_at INTEGER NOT NULL
     );
 
+    -- Working directory history
+    CREATE TABLE IF NOT EXISTS working_directory_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      path TEXT NOT NULL UNIQUE,
+      last_used INTEGER NOT NULL,
+      use_count INTEGER DEFAULT 1
+    );
+
     -- Indexes for faster lookups
     CREATE INDEX IF NOT EXISTS idx_conversations_phone
       ON conversations(phone_number, timestamp DESC);
@@ -78,6 +86,9 @@ export function initDb() {
 
     CREATE INDEX IF NOT EXISTS idx_approvals_phone
       ON pending_approvals(phone_number);
+
+    CREATE INDEX IF NOT EXISTS idx_workdir_last_used
+      ON working_directory_history(last_used DESC);
   `);
     return db;
 }
@@ -240,6 +251,32 @@ export function cleanupExpiredApprovals() {
     const database = initDb();
     const result = database.prepare('DELETE FROM pending_approvals WHERE expires_at < ?').run(Date.now());
     return result.changes;
+}
+export function recordWorkingDirectory(dirPath) {
+    const database = initDb();
+    const now = Date.now();
+    // Upsert: insert or update if exists
+    database.prepare(`
+    INSERT INTO working_directory_history (path, last_used, use_count)
+    VALUES (?, ?, 1)
+    ON CONFLICT(path) DO UPDATE SET
+      last_used = excluded.last_used,
+      use_count = use_count + 1
+  `).run(dirPath, now);
+}
+export function getRecentWorkingDirectories(limit = 10) {
+    const database = initDb();
+    const rows = database.prepare(`
+    SELECT id, path, last_used, use_count
+    FROM working_directory_history
+    ORDER BY last_used DESC
+    LIMIT ?
+  `).all(limit);
+    return rows;
+}
+export function removeWorkingDirectory(dirPath) {
+    const database = initDb();
+    database.prepare('DELETE FROM working_directory_history WHERE path = ?').run(dirPath);
 }
 // --- Utility ---
 export function closeDb() {

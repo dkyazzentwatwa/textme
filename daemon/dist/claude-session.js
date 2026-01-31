@@ -273,17 +273,19 @@ You can use the Read tool on image URLs to view them - you are a multimodal LLM.
             }
         }
         else if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-            // Streaming text delta
-            ctx.appendText(event.delta.text || '');
+            // Streaming text delta - SKIP this as we get full text from 'assistant' message blocks
+            // This was causing duplicate text output
+            // ctx.appendText(event.delta.text || '');
         }
         else if (event.type === 'message_start' || event.type === 'message_delta') {
             // Message metadata - ignore
         }
         else if (event.type === 'result') {
-            // Final result - might contain the response
-            if (event.result) {
-                ctx.appendText(event.result);
-            }
+            // Final result - SKIP this as we get text from 'assistant' message blocks
+            // This was also causing duplicate text output
+            // if (event.result) {
+            //   ctx.appendText(event.result);
+            // }
         }
         else if (event.type === 'system' && event.message) {
             // System messages can contain useful info

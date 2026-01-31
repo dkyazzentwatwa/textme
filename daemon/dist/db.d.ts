@@ -35,5 +35,14 @@ export declare function getPendingApproval(phoneNumber: string): PendingApproval
 export declare function getPendingApprovalById(id: string): PendingApproval | null;
 export declare function removePendingApproval(id: string): void;
 export declare function cleanupExpiredApprovals(): number;
+export interface WorkingDirectoryEntry {
+    id: number;
+    path: string;
+    last_used: number;
+    use_count: number;
+}
+export declare function recordWorkingDirectory(dirPath: string): void;
+export declare function getRecentWorkingDirectories(limit?: number): WorkingDirectoryEntry[];
+export declare function removeWorkingDirectory(dirPath: string): void;
 export declare function closeDb(): void;
 export declare function getDbPath(): string;

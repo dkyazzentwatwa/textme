@@ -22,9 +22,13 @@ Text Claude from anywhere. Send messages, voice notes, or images - get intellige
 
 ### 1. Sendblue Setup (Free)
 
-1. Sign up at [dashboard.sendblue.com](https://dashboard.sendblue.com/company-signup)
-2. Get your **API Key** and **API Secret** from Dashboard → API Keys
-3. Add your phone number as a **verified contact**
+1. Go to [sendblue.com/api](https://sendblue.com/api)
+2. Click the **"Sign up"** button at the top
+3. Log in to your new account
+4. **Verify your phone number** (required before you can use the API)
+5. Go to **Settings** → **API Settings** tab
+6. Copy your **API Key** and **API Secret**
+7. Go to **Settings** → **Phone Lines** tab and copy your **Sendblue phone number**
 
 ### 2. Requirements
 

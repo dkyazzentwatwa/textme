@@ -41,6 +41,8 @@ import {
   getState,
   setState,
   getLastConversationInfo,
+  recordWorkingDirectory,
+  getRecentWorkingDirectories,
 } from './db.js';
 import type { DaemonConfig } from './types.js';
 import os from 'os';
@@ -212,6 +214,8 @@ function getWorkingDirectory(): string {
  */
 function setWorkingDirectory(dir: string): void {
   setState('current_project', dir);
+  // Also record in history for the /dirs command
+  recordWorkingDirectory(dir);
 }
 
 
@@ -256,6 +260,25 @@ async function init(): Promise<void> {
   // Send startup notification to first whitelisted number
   if (config.whitelist.length > 0) {
     const primaryNumber = config.whitelist[0];
+
+    // Check if we've sent the contact card to this user
+    const contactCardKey = `contact_card_sent:${primaryNumber}`;
+    const contactCardSent = getState(contactCardKey);
+
+    if (!contactCardSent) {
+      // Send contact card on first startup for this user
+      try {
+        await sendblue.sendContactCardFromData(primaryNumber, {
+          name: 'Claude',
+          phone: config.sendblue.phoneNumber,
+          note: 'Your personal AI assistant via iMessage',
+        });
+        setState(contactCardKey, 'true');
+        console.log('[Daemon] Contact card sent to new user');
+      } catch (err) {
+        console.error('[Daemon] Failed to send contact card:', err);
+      }
+    }
 
     // Build context-aware startup message
     let startupMsg = `🤖 Ready!\n📂 ${workingDir}`;
@@ -377,6 +400,43 @@ function detectMediaType(url: string): 'image' | 'audio' | 'video' | 'file' {
 interface SendFileRequest {
   path: string;
   caption?: string;
+}
+
+/**
+ * Detect and remove duplicated content in Claude's response.
+ * Sometimes Claude accidentally outputs the same content twice.
+ */
+function deduplicateResponse(response: string): string {
+  if (!response || response.length < 100) return response;
+
+  // Try to find if the response is split into two identical halves
+  const trimmed = response.trim();
+  const halfLength = Math.floor(trimmed.length / 2);
+
+  // Check for exact duplication (with possible whitespace in between)
+  for (let splitPoint = halfLength - 50; splitPoint <= halfLength + 50; splitPoint++) {
+    if (splitPoint <= 0 || splitPoint >= trimmed.length) continue;
+
+    const firstHalf = trimmed.substring(0, splitPoint).trim();
+    const secondHalf = trimmed.substring(splitPoint).trim();
+
+    if (firstHalf === secondHalf && firstHalf.length > 50) {
+      console.log(`[Dedup] Removed duplicate content (${firstHalf.length} chars duplicated)`);
+      return firstHalf;
+    }
+  }
+
+  // Check if response ends with a repeat of a large portion from the beginning
+  const minDupLength = 100;
+  for (let len = Math.floor(trimmed.length / 2); len >= minDupLength; len -= 10) {
+    const start = trimmed.substring(0, len).trim();
+    if (trimmed.endsWith(start)) {
+      console.log(`[Dedup] Removed trailing duplicate (${len} chars)`);
+      return trimmed.substring(0, trimmed.length - len).trim();
+    }
+  }
+
+  return response;
 }
 
 function parseSendFileTags(response: string): { files: SendFileRequest[]; cleanedResponse: string } {
@@ -541,6 +601,11 @@ function isResetCommand(content: string): boolean {
   return normalized === 'reset' || normalized === 'fresh' || normalized === 'new session';
 }
 
+function isDirsCommand(content: string): boolean {
+  const normalized = content.toLowerCase().trim();
+  return normalized === 'dirs' || normalized === 'projects' || normalized === '/dirs' || normalized === '/projects';
+}
+
 function isCdCommand(content: string): { isCD: boolean; path: string | null; error?: string } {
   const normalized = content.trim();
   // Match "cd /path" or "cd ~/path" or "cd /path/to/dir"
@@ -675,11 +740,14 @@ async function processMessage(
       await sendFilesToUser(phoneNumber, files, sendblue);
     }
 
+    // Deduplicate response if Claude accidentally repeated content
+    const deduplicatedResponse = deduplicateResponse(cleanedResponse);
+
     // Truncate if needed
     const MAX_LENGTH = 15000;
-    const finalResponse = cleanedResponse.length > MAX_LENGTH
-      ? cleanedResponse.substring(0, MAX_LENGTH) + '\n\n[Truncated]'
-      : cleanedResponse;
+    const finalResponse = deduplicatedResponse.length > MAX_LENGTH
+      ? deduplicatedResponse.substring(0, MAX_LENGTH) + '\n\n[Truncated]'
+      : deduplicatedResponse;
 
     // Send final text response (if there's any text left)
     if (finalResponse.trim()) {
@@ -974,6 +1042,24 @@ async function poll(): Promise<void> {
         clearConversationHistory(msg.from_number);
         killCurrentSession();
         await sendblue.sendMessage(msg.from_number, `🔄 Fresh start!\nDirectory: ${homeDir}\nChat history cleared.`);
+        continue;
+      }
+
+      // Handle dirs/projects command - list recent working directories
+      if (isDirsCommand(content)) {
+        const dirs = getRecentWorkingDirectories(10);
+        if (dirs.length === 0) {
+          await sendblue.sendMessage(msg.from_number, '📂 No directory history yet');
+        } else {
+          const currentDir = getWorkingDirectory();
+          const lines = dirs.map((d, i) => {
+            const ago = formatTimeAgo(d.last_used);
+            const current = d.path === currentDir ? ' ← current' : '';
+            const shortPath = d.path.replace(os.homedir(), '~');
+            return `${i + 1}. ${shortPath}\n   ${ago} (${d.use_count}x)${current}`;
+          });
+          await sendblue.sendMessage(msg.from_number, `📂 Recent directories:\n\n${lines.join('\n\n')}`);
+        }
         continue;
       }
 

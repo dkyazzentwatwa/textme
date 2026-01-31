@@ -5,6 +5,36 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+const phoneUtil = PhoneNumberUtil.getInstance();
+/**
+ * Format a phone number to E.164 format (+1XXXXXXXXXX)
+ * Assumes US numbers if no country code provided
+ */
+function formatPhoneNumber(phone) {
+    try {
+        // Try parsing as-is first (might have country code)
+        let parsed = phoneUtil.parse(phone, 'US');
+        if (phoneUtil.isValidNumber(parsed)) {
+            return phoneUtil.format(parsed, PhoneNumberFormat.E164);
+        }
+        throw new Error('Invalid phone number');
+    }
+    catch {
+        // If that fails, try to clean and re-parse
+        const cleaned = phone.replace(/\D/g, '');
+        try {
+            const parsed = phoneUtil.parse(cleaned, 'US');
+            if (phoneUtil.isValidNumber(parsed)) {
+                return phoneUtil.format(parsed, PhoneNumberFormat.E164);
+            }
+        }
+        catch {
+            // Fall through to error
+        }
+        throw new Error(`Invalid phone number format: ${phone}. Please use E.164 format (e.g., +15551234567)`);
+    }
+}
 const CONFIG_DIR = path.join(os.homedir(), '.config', 'claude-imessage');
 const CONFIG_PATH = path.join(CONFIG_DIR, 'config.json');
 const DEFAULT_CONFIG = {
@@ -53,13 +83,23 @@ function validateConfig(raw) {
     if (!Array.isArray(obj.whitelist) || obj.whitelist.length === 0) {
         throw new Error('Config missing or empty whitelist');
     }
+    // Format all phone numbers to E.164
+    const formattedSendbluePhone = formatPhoneNumber(sendblue.phoneNumber);
+    const formattedWhitelist = obj.whitelist.map((phone, index) => {
+        try {
+            return formatPhoneNumber(phone);
+        }
+        catch (error) {
+            throw new Error(`Invalid phone number in whitelist at index ${index}: ${phone}`);
+        }
+    });
     return {
         sendblue: {
             apiKey: sendblue.apiKey,
             apiSecret: sendblue.apiSecret,
-            phoneNumber: sendblue.phoneNumber,
+            phoneNumber: formattedSendbluePhone,
         },
-        whitelist: obj.whitelist,
+        whitelist: formattedWhitelist,
         pollIntervalMs: typeof obj.pollIntervalMs === 'number'
             ? obj.pollIntervalMs
             : DEFAULT_CONFIG.pollIntervalMs,

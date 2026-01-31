@@ -188,35 +188,33 @@ export class SendblueClient {
         return this.sendMessage(toNumber, '', vcardUrl);
     }
     /**
-     * Send a contact card by creating and hosting a temporary vCard
-     * Uses a data URL approach (may not work with all iMessage clients)
+     * Send a contact card by creating a vCard, uploading it, and sending as media
      */
     async sendContactCardFromData(toNumber, contact) {
         // Create vCard content
         const nameParts = contact.name.split(' ');
         const lastName = nameParts.pop() || '';
         const firstName = nameParts.join(' ') || contact.name;
-        let vcard = `BEGIN:VCARD
-VERSION:3.0
-FN:${contact.name}
-N:${lastName};${firstName};;;`;
+        let vcard = `BEGIN:VCARD\r\nVERSION:3.0\r\nFN:${contact.name}\r\nN:${lastName};${firstName};;;`;
         if (contact.phone) {
-            vcard += `\nTEL;TYPE=CELL:${contact.phone}`;
+            vcard += `\r\nTEL;TYPE=CELL:${contact.phone}`;
         }
         if (contact.email) {
-            vcard += `\nEMAIL:${contact.email}`;
+            vcard += `\r\nEMAIL:${contact.email}`;
         }
         if (contact.organization) {
-            vcard += `\nORG:${contact.organization}`;
+            vcard += `\r\nORG:${contact.organization}`;
         }
         if (contact.note) {
-            vcard += `\nNOTE:${contact.note}`;
+            vcard += `\r\nNOTE:${contact.note}`;
         }
-        vcard += `\nEND:VCARD`;
+        vcard += `\r\nEND:VCARD`;
         console.log(`[Sendblue] Created vCard for ${contact.name}`);
-        console.log(`[Sendblue] Note: You need to host this vCard on a public URL`);
-        console.log(vcard);
-        throw new Error('To send a contact card, you must host the vCard on a public URL (e.g., Google Cloud Storage, S3, or any CDN). ' +
-            'Then use sendContactCard(toNumber, vcardUrl) with the public URL.');
+        // Upload the vCard as a file
+        const vcardBuffer = Buffer.from(vcard, 'utf-8');
+        const filename = `${contact.name.replace(/\s+/g, '_')}.vcf`;
+        const mediaUrl = await this.uploadFileFromBuffer(vcardBuffer, filename);
+        // Send with the uploaded vCard URL
+        return this.sendMessage(toNumber, '', mediaUrl);
     }
 }

@@ -73,6 +73,14 @@ export function initDb(): Database.Database {
       expires_at INTEGER NOT NULL
     );
 
+    -- Working directory history
+    CREATE TABLE IF NOT EXISTS working_directory_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      path TEXT NOT NULL UNIQUE,
+      last_used INTEGER NOT NULL,
+      use_count INTEGER DEFAULT 1
+    );
+
     -- Indexes for faster lookups
     CREATE INDEX IF NOT EXISTS idx_conversations_phone
       ON conversations(phone_number, timestamp DESC);
@@ -85,6 +93,9 @@ export function initDb(): Database.Database {
 
     CREATE INDEX IF NOT EXISTS idx_approvals_phone
       ON pending_approvals(phone_number);
+
+    CREATE INDEX IF NOT EXISTS idx_workdir_last_used
+      ON working_directory_history(last_used DESC);
   `);
 
   return db;
@@ -318,6 +329,45 @@ export function cleanupExpiredApprovals(): number {
   const database = initDb();
   const result = database.prepare('DELETE FROM pending_approvals WHERE expires_at < ?').run(Date.now());
   return result.changes;
+}
+
+// --- Working Directory History ---
+
+export interface WorkingDirectoryEntry {
+  id: number;
+  path: string;
+  last_used: number;
+  use_count: number;
+}
+
+export function recordWorkingDirectory(dirPath: string): void {
+  const database = initDb();
+  const now = Date.now();
+
+  // Upsert: insert or update if exists
+  database.prepare(`
+    INSERT INTO working_directory_history (path, last_used, use_count)
+    VALUES (?, ?, 1)
+    ON CONFLICT(path) DO UPDATE SET
+      last_used = excluded.last_used,
+      use_count = use_count + 1
+  `).run(dirPath, now);
+}
+
+export function getRecentWorkingDirectories(limit: number = 10): WorkingDirectoryEntry[] {
+  const database = initDb();
+  const rows = database.prepare(`
+    SELECT id, path, last_used, use_count
+    FROM working_directory_history
+    ORDER BY last_used DESC
+    LIMIT ?
+  `).all(limit) as WorkingDirectoryEntry[];
+  return rows;
+}
+
+export function removeWorkingDirectory(dirPath: string): void {
+  const database = initDb();
+  database.prepare('DELETE FROM working_directory_history WHERE path = ?').run(dirPath);
 }
 
 // --- Utility ---
