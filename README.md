@@ -10,6 +10,18 @@ Text Claude from anywhere. Send messages, voice notes, or images - get intellige
 
 ---
 
+## 📱 See It In Action
+
+<div align="center">
+  <img src="resources/images/demo-overview.png" alt="TextMe giving project overview" width="600">
+  <p><em>Ask Claude to analyze your codebase - get instant insights via iMessage</em></p>
+
+  <img src="resources/images/demo-analysis.png" alt="TextMe analyzing recent commits" width="600">
+  <p><em>Real-time progress updates as Claude runs commands and analyzes your project</em></p>
+</div>
+
+---
+
 ## 🔒 Security-First Design
 
 > **TextMe v2.0 Security Upgrade** - Following a comprehensive security audit by Kimi K2, TextMe now includes enterprise-grade security features to protect against injection attacks, rate-based abuse, and unauthorized access.
