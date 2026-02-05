@@ -191,12 +191,57 @@ tail -f ~/.local/log/claude-imessage-security.log   # Security events
 
 ---
 
-## Auto-Start (launchd)
+## Auto-Start (macOS launchd)
+
+### Enable Auto-Start on Login
 
 ```bash
-./scripts/install-launchd.sh    # Enable
-./scripts/uninstall-launchd.sh  # Disable
+./scripts/install-launchd.sh
 ```
+
+The daemon will now start automatically when you log in and auto-restart if it crashes.
+
+### Managing the Daemon
+
+**Stop the daemon:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.claude.imessage-daemon.plist
+```
+
+**Start the daemon:**
+```bash
+launchctl load ~/Library/LaunchAgents/com.claude.imessage-daemon.plist
+```
+
+**Restart the daemon:**
+```bash
+launchctl unload ~/Library/LaunchAgents/com.claude.imessage-daemon.plist
+launchctl load ~/Library/LaunchAgents/com.claude.imessage-daemon.plist
+```
+
+**Check status:**
+```bash
+launchctl list | grep claude
+```
+
+### Disable Auto-Start
+
+```bash
+./scripts/uninstall-launchd.sh
+```
+
+This stops the daemon and removes it from auto-start.
+
+### Quick Reference
+
+| Action | Command |
+|--------|---------|
+| **Install auto-start** | `./scripts/install-launchd.sh` |
+| **Stop daemon** | `launchctl unload ~/Library/LaunchAgents/com.claude.imessage-daemon.plist` |
+| **Start daemon** | `launchctl load ~/Library/LaunchAgents/com.claude.imessage-daemon.plist` |
+| **Check status** | `launchctl list \| grep claude` |
+| **Remove auto-start** | `./scripts/uninstall-launchd.sh` |
+| **View logs** | `tail -f ~/.local/log/claude-imessage.log` |
 
 ---
 
