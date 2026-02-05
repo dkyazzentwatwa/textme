@@ -5,7 +5,9 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+import libphonenumber from 'google-libphonenumber';
+import { validateConfigPermissions } from './security.js';
+const { PhoneNumberUtil, PhoneNumberFormat } = libphonenumber;
 const phoneUtil = PhoneNumberUtil.getInstance();
 /**
  * Format a phone number to E.164 format (+1XXXXXXXXXX)
@@ -50,6 +52,8 @@ export function loadConfig() {
         throw new Error(`Config not found. Created example at ${CONFIG_PATH}.example\n` +
             `Copy to ${CONFIG_PATH} and fill in your values.`);
     }
+    // Validate config file permissions for security
+    validateConfigPermissions(CONFIG_PATH);
     let rawConfig;
     try {
         const content = fs.readFileSync(CONFIG_PATH, 'utf-8');

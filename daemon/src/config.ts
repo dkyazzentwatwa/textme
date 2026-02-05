@@ -6,9 +6,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { PhoneNumberUtil, PhoneNumberFormat } from 'google-libphonenumber';
+import libphonenumber from 'google-libphonenumber';
 import type { DaemonConfig } from './types.js';
+import { validateConfigPermissions } from './security.js';
 
+const { PhoneNumberUtil, PhoneNumberFormat } = libphonenumber;
 const phoneUtil = PhoneNumberUtil.getInstance();
 
 /**
@@ -58,6 +60,9 @@ export function loadConfig(): DaemonConfig {
       `Copy to ${CONFIG_PATH} and fill in your values.`
     );
   }
+
+  // Validate config file permissions for security
+  validateConfigPermissions(CONFIG_PATH);
 
   let rawConfig: unknown;
   try {

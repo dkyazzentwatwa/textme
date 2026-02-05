@@ -69,7 +69,16 @@ export class SendblueClient {
    */
   async getInboundMessages(since?: Date, limit: number = 50): Promise<SendblueMessage[]> {
     const allMessages = await this.getMessages(since, limit);
-    return allMessages.filter(msg => !msg.is_outbound);
+
+    // DEBUG: Log all messages and their direction
+    allMessages.forEach(msg => {
+      console.log(`[Sendblue] Message ${msg.message_handle}: from=${msg.from_number}, is_outbound=${msg.is_outbound}, content="${msg.content?.substring(0, 30)}..."`);
+    });
+
+    const inboundMessages = allMessages.filter(msg => !msg.is_outbound);
+    console.log(`[Sendblue] Filtered: ${allMessages.length} total -> ${inboundMessages.length} inbound`);
+
+    return inboundMessages;
   }
 
   /**

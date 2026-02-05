@@ -11,6 +11,7 @@
 import { loadConfig, getConfigPath } from './config.js';
 import { SendblueClient } from './sendblue.js';
 import { getOrCreateSession, killCurrentSession, getCurrentSession, interruptCurrentTask, } from './claude-session.js';
+import { sanitizeMessageContent, checkRateLimit, detectSuspiciousPatterns, } from './security.js';
 import { initDb, closeDb, isMessageProcessed, markMessageProcessed, addConversationMessage, getConversationHistory, trimConversationHistory, clearConversationHistory, cleanupOldProcessedMessages, getRunningTask, queueMessage, getNextQueuedMessage, removeQueuedMessage, getQueueLength, getAllQueuedMessages, getPendingApproval, removePendingApproval, cleanupExpiredApprovals, getState, setState, getLastConversationInfo, recordWorkingDirectory, getRecentWorkingDirectories, } from './db.js';
 import os from 'os';
 import fs from 'fs';
@@ -255,7 +256,12 @@ async function init() {
 function isWhitelisted(phoneNumber) {
     const normalize = (num) => num.replace(/\D/g, '');
     const normalized = normalize(phoneNumber);
-    return config.whitelist.some(w => normalize(w) === normalized);
+    const normalizedWhitelist = config.whitelist.map(w => normalize(w));
+    console.log(`[Whitelist] Checking: ${phoneNumber} -> ${normalized}`);
+    console.log(`[Whitelist] Against: ${JSON.stringify(config.whitelist)} -> ${JSON.stringify(normalizedWhitelist)}`);
+    const result = config.whitelist.some(w => normalize(w) === normalized);
+    console.log(`[Whitelist] Result: ${result}`);
+    return result;
 }
 /**
  * Get daemon status
@@ -289,6 +295,7 @@ const HELP_MESSAGE = `Commands:
 • queue - View queued messages
 • history - Recent messages & outcomes
 • history N - Expand item N details
+• dirs / projects - List recent directories
 • home - Go to home directory
 • reset / fresh - Home + clear chat history
 • cd <path> - Change directory
@@ -700,26 +707,46 @@ async function poll() {
         const status = isProcessingMessage ? 'busy' : (queueLen > 0 ? `queue=${queueLen}` : 'idle');
         console.log(`[Poll] ${messages.length} msgs (${pollDuration}ms) | ${status}`);
         for (const msg of messages) {
-            if (isMessageProcessed(msg.message_handle))
+            // DEBUG: Log message details
+            console.log(`[Poll] Message from: ${msg.from_number}, handle: ${msg.message_handle}`);
+            if (isMessageProcessed(msg.message_handle)) {
+                console.log(`[Poll] Already processed: ${msg.message_handle}`);
                 continue;
+            }
             if (!isWhitelisted(msg.from_number)) {
+                console.log(`[Poll] Not whitelisted: ${msg.from_number}`);
+                markMessageProcessed(msg.message_handle);
+                continue;
+            }
+            // Check rate limiting
+            const rateLimit = checkRateLimit(msg.from_number);
+            if (!rateLimit.allowed) {
+                console.log(`[Poll] Rate limit exceeded: ${msg.from_number}`);
+                await sendblue.sendMessage(msg.from_number, '⚠️ Rate limit exceeded. Please wait before sending more messages.');
                 markMessageProcessed(msg.message_handle);
                 continue;
             }
             const textContent = msg.content?.trim() || '';
+            // Sanitize content to prevent metadata spoofing and injection attacks
+            const sanitizedContent = sanitizeMessageContent(textContent);
+            // Detect suspicious patterns (e.g., attempts to access sensitive files)
+            const suspicious = detectSuspiciousPatterns(sanitizedContent);
+            if (suspicious.length > 0) {
+                console.warn(`[Security] Suspicious patterns detected:`, suspicious);
+            }
             const mediaUrl = msg.media_url;
             // Skip if no text AND no media
-            if (!textContent && !mediaUrl) {
+            if (!sanitizedContent && !mediaUrl) {
                 markMessageProcessed(msg.message_handle);
                 continue;
             }
             // Build combined content with media info
-            let content = textContent;
+            let content = sanitizedContent;
             if (mediaUrl) {
                 const mediaType = detectMediaType(mediaUrl);
                 if (mediaType === 'image') {
                     const imageNotice = `[User sent an image: ${mediaUrl}]`;
-                    content = textContent ? `${textContent}\n\n${imageNotice}` : imageNotice;
+                    content = sanitizedContent ? `${sanitizedContent}\n\n${imageNotice}` : imageNotice;
                     console.log(`[Poll] New image: ${mediaUrl.substring(0, 50)}...`);
                 }
                 else if (mediaType === 'audio') {
@@ -729,22 +756,22 @@ async function poll() {
                         const transcription = await transcribeAudio(mediaUrl);
                         if (transcription) {
                             const voiceNotice = `[Voice note transcription: "${transcription}"]`;
-                            content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                            content = sanitizedContent ? `${sanitizedContent}\n\n${voiceNotice}` : voiceNotice;
                         }
                         else {
                             const voiceNotice = `[User sent a voice note: ${mediaUrl}]`;
-                            content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                            content = sanitizedContent ? `${sanitizedContent}\n\n${voiceNotice}` : voiceNotice;
                         }
                     }
                     catch (err) {
                         console.error('[Poll] Transcription failed:', err);
                         const voiceNotice = `[User sent a voice note: ${mediaUrl}]`;
-                        content = textContent ? `${textContent}\n\n${voiceNotice}` : voiceNotice;
+                        content = sanitizedContent ? `${sanitizedContent}\n\n${voiceNotice}` : voiceNotice;
                     }
                 }
                 else {
                     const fileNotice = `[User sent a file: ${mediaUrl}]`;
-                    content = textContent ? `${textContent}\n\n${fileNotice}` : fileNotice;
+                    content = sanitizedContent ? `${sanitizedContent}\n\n${fileNotice}` : fileNotice;
                 }
             }
             // 1 line per new message
